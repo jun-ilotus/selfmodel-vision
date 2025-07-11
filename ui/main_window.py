@@ -1,8 +1,7 @@
-import sys
 import os
 import numpy as np
-from PyQt5.QtWidgets import (QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, 
-                             QPushButton, QProgressBar, QSplitter, QMessageBox, QFileDialog)
+from PyQt5.QtWidgets import (QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
+                             QPushButton, QProgressBar, QSplitter, QMessageBox, QFileDialog, QLabel)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
@@ -10,6 +9,7 @@ from .image_display import ImageDisplayWidget
 from .result_table import ResultTableWidget
 from .model_processor import ModelProcessor
 from utils.model_utils import find_config_file
+from utils.answer_utils import AnswerMatcher
 
 
 class AlgorithmRecognitionPlatform(QMainWindow):
@@ -19,11 +19,12 @@ class AlgorithmRecognitionPlatform(QMainWindow):
         self.model_path = None
         self.image_paths = []
         self.config_path = None
+        self.answer_matcher = AnswerMatcher()  # 加载标准答案
         self.init_ui()
         
     def init_ui(self):
         self.setWindowTitle("算法识别平台")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1500, 800)
         self.setup_styles()
         
         # 创建中央部件
@@ -31,15 +32,19 @@ class AlgorithmRecognitionPlatform(QMainWindow):
         self.setCentralWidget(central_widget)
         
         # 主布局
-        main_layout = QVBoxLayout(central_widget)
-        
+        main_layout = QVBoxLayout(central_widget)  
+
         # 创建各个组件
         self.create_button_area(main_layout)
         self.create_progress_bar(main_layout)
         self.create_content_area(main_layout)
-        
+
         # 状态栏
         self.statusBar().showMessage("就绪")
+        self.avg_acc_label = QLabel("平均正确率：-")
+        self.avg_acc_label.setFont(QFont("Arial", 10, QFont.Bold))
+        self.avg_acc_label.setStyleSheet("color: #1976d2; padding: 0 30px;")
+        self.statusBar().addPermanentWidget(self.avg_acc_label)
         self.center()
         
     def setup_styles(self):
@@ -122,7 +127,7 @@ class AlgorithmRecognitionPlatform(QMainWindow):
         content_splitter.addWidget(self.result_table)
         
         # 设置分割器比例
-        content_splitter.setSizes([500, 700])
+        content_splitter.setSizes([500, 1000])
         main_layout.addWidget(content_splitter)
         
     def upload_images(self):
@@ -192,7 +197,27 @@ class AlgorithmRecognitionPlatform(QMainWindow):
         
     def handle_results(self, data):
         """处理结果"""
+
+        # 增加标准答案和正确率
+        for result in data['results']:
+            filename = os.path.basename(result['image_path'])
+            answer = self.answer_matcher.get_answer(filename)
+            result['answer'] = answer if answer is not None else ''
+            if answer is not None:
+                result['accuracy'] = self.answer_matcher.calculate_accuracy(result['prediction'], answer)
+            else:
+                result['accuracy'] = None
+
         self.result_table.update_results(data['results'])
+
+        # 计算平均正确率
+        acc_list = [r['accuracy'] for r in data['results'] if r.get('accuracy') is not None]
+        if acc_list:
+            avg_acc = sum(acc_list) / len(acc_list)
+            self.avg_acc_label.setText(f"平均正确率：{avg_acc:.2f}%")
+        else:
+            self.avg_acc_label.setText("平均正确率：-")
+
         # 计算统计信息
         successful = sum(1 for r in data['results'] if r['status'] == '成功')
         total = data['total']
