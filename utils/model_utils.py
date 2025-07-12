@@ -9,6 +9,7 @@ import json
 import cv2
 import numpy as np
 import onnxruntime as ort
+from PIL import Image
 
 
 class ModelConfig:
@@ -24,6 +25,12 @@ class ModelConfig:
         if use_space_char:
             self.character.append(' ')
         self.character = ['blank'] + self.character
+
+        self.classDict = []
+        with open('label2class.txt', 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip('\n').strip('\r\n')
+                self.classDict.append(line)
 
     def load_config(self, config_path):
         """加载配置文件"""
@@ -101,28 +108,69 @@ class ModelLoader:
     
     def preprocess_image(self, img_path):
         """预处理图像"""
+        img_array = None
+        input_name = self.get_input_name()[0]
 
         img = cv2.imdecode(np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR)
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)  # 转换为BGR
+        if input_name == 'TextRecognizerInput':
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)  # 转换为BGR
 
-        h, w = img.shape[:2]
-        ratio = w / float(h)
+            h, w = img.shape[:2]
+            ratio = w / float(h)
 
-        target_height, target_width = self.config.get_preprocess_config()['resize']
+            target_height, target_width = self.config.get_preprocess_config()['resize']
 
-        new_w = min(int(np.ceil(target_height * ratio)), target_width)
-        resized_img = cv2.resize(img, (new_w, target_height))
-        padded_img = np.zeros((target_height, target_width, 3), dtype=np.uint8)
-        padded_img[:, :new_w, :] = resized_img
+            new_w = min(int(np.ceil(target_height * ratio)), target_width)
+            resized_img = cv2.resize(img, (new_w, target_height))
+            padded_img = np.zeros((target_height, target_width, 3), dtype=np.uint8)
+            padded_img[:, :new_w, :] = resized_img
 
-        img_array = padded_img.transpose(2, 0, 1) # HWC转换为CHW格式
+            img_array = padded_img.transpose(2, 0, 1) # HWC转换为CHW格式
 
-        # 归一化到[-1, 1]
-        img_array = img_array.astype(np.float32) / 255.0
-        img_array = (img_array - 0.5) / 0.5
+            # 归一化到[-1, 1]
+            img_array = img_array.astype(np.float32) / 255.0
+            img_array = (img_array - 0.5) / 0.5
 
-        img_array = img_array[np.newaxis, ...] # 添加batch维度
-        
+            img_array = img_array[np.newaxis, ...] # 添加batch维度
+        elif input_name == 'ImageClassificationInput':
+            # 将输入图像的最小边（宽或高）缩放到256像素，同时保持原始宽高比
+            def image_resize(image, min_len):
+                image = Image.fromarray(image)
+                ratio = float(min_len) / min(image.size[0], image.size[1])
+                if image.size[0] > image.size[1]:
+                    new_size = (int(round(ratio * image.size[0])), min_len)
+                else:
+                    new_size = (min_len, int(round(ratio * image.size[1])))
+                image = image.resize(new_size, Image.BILINEAR)
+                return np.array(image)
+
+            image = image_resize(img, 256)
+
+            # 从调整大小后的图像中心裁剪出224×224的区域
+            def crop_center(image, crop_w, crop_h):
+                h, w, c = image.shape
+                start_x = w // 2 - crop_w // 2
+                start_y = h // 2 - crop_h // 2
+                return image[start_y:start_y + crop_h, start_x:start_x + crop_w, :]
+
+            image = crop_center(image, 224, 224)
+
+            # 将图像从HWC格式（高度、宽度、通道）转换为CHW格式（通道、高度、宽度）
+            image = image.transpose(2, 0, 1)
+
+            # 将像素值从uint8转换为float32类型
+            img_data = image.astype('float32')
+
+            # 先除以255将像素值缩放到[0,1]范围, 然后使用ImageNet数据集的均值和标准差进行标准化
+            mean_vec = np.array([0.485, 0.456, 0.406])
+            stddev_vec = np.array([0.229, 0.224, 0.225])
+            norm_img_data = np.zeros(img_data.shape).astype('float32')
+            for i in range(img_data.shape[0]):
+                norm_img_data[i, :, :] = (img_data[i, :, :] / 255 - mean_vec[i]) / stddev_vec[i]
+
+            # add batch channel
+            norm_img_data = norm_img_data.reshape(1, 3, 224, 224).astype('float32')
+            img_array = norm_img_data
         return img_array
     
     def predict(self, img_path):
@@ -140,7 +188,6 @@ class ModelLoader:
         input_feed = self.get_input_feed(input_name, processed_img)
 
         outputs = self.session.run(output_name, input_feed=input_feed)
-        
         # 处理结果
         prediction, confidence = self.process_output(outputs[0])
         
@@ -152,23 +199,31 @@ class ModelLoader:
             :param is_remove_duplicate: 是否去除重复
             :return: 预测结果
         """
-        preds_idx = output.argmax(axis=2) # 取每个时间步（seq_len）上概率最大的类别索引，得到每个字符的预测类别，shape为[batch, seq_len]
-        preds_prob = output.max(axis=2) # 取每个时间步（seq_len）上概率最大的概率值，得到每个字符的置信度，shape为[batch, seq_len]
+        input_name = self.get_input_name()[0]
+        text = ''
+        conf = 0.0
 
-        char_list = []
-        conf_list = []
-        prev_idx = None
-        for idx, prob in zip(preds_idx[0], preds_prob[0]):
-            if idx == 0:  # blank
-                prev_idx = None
-                continue
-            if idx == prev_idx:  # 去重
-                continue
-            char_list.append(self.config.character[idx])
-            conf_list.append(prob)
-            prev_idx = idx
-        text = ''.join(char_list)
-        conf = float(np.mean(conf_list)) if conf_list else 0.0
+        if input_name == 'TextRecognizerInput':
+            preds_idx = output.argmax(axis=2) # 取每个时间步（seq_len）上概率最大的类别索引，得到每个字符的预测类别，shape为[batch, seq_len]
+            preds_prob = output.max(axis=2) # 取每个时间步（seq_len）上概率最大的概率值，得到每个字符的置信度，shape为[batch, seq_len]
+
+            char_list = []
+            conf_list = []
+            prev_idx = None
+            for idx, prob in zip(preds_idx[0], preds_prob[0]):
+                if idx == 0:  # blank
+                    prev_idx = None
+                    continue
+                if idx == prev_idx:  # 去重
+                    continue
+                char_list.append(self.config.character[idx])
+                conf_list.append(prob)
+                prev_idx = idx
+            text = ''.join(char_list)
+            conf = float(np.mean(conf_list)) if conf_list else 0.0
+        elif input_name == 'ImageClassificationInput':
+            idx = output.argmax()
+            text = self.config.classDict[idx]
 
         return text, conf
 

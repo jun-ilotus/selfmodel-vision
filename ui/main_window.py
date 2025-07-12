@@ -160,8 +160,8 @@ class AlgorithmRecognitionPlatform(QMainWindow):
     def find_config_file(self):
         """查找配置文件"""
         self.config_path = find_config_file(self.model_path)
-        if self.config_path:
-            self.statusBar().showMessage(f"已找到配置文件: {os.path.basename(self.config_path)}")
+        # if self.config_path:
+        #     self.statusBar().showMessage(f"已找到配置文件: {os.path.basename(self.config_path)}")
             
     def update_process_button(self):
         """更新处理按钮状态"""
@@ -232,8 +232,7 @@ class AlgorithmRecognitionPlatform(QMainWindow):
             avg_confidence = np.mean([r['confidence'] for r in data['results'] if r['status'] == '成功'])
             QMessageBox.information(self, "处理完成", 
                                   f"处理完成！\n"
-                                  f"成功识别: {successful}/{total}\n"
-                                  f"平均置信度: {avg_confidence:.4f}")
+                                  f"成功识别: {successful}/{total}")
         
     def handle_error(self, error_msg):
         """处理错误"""

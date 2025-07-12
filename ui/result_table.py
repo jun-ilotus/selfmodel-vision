@@ -21,8 +21,8 @@ class ResultTableWidget(QWidget):
         
         # 表格
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["图像", "预测结果", "置信度", "正确答案", "正确率", "状态"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["图像", "预测结果", "正确答案", "正确率", "状态"])
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table)
         
@@ -41,15 +41,15 @@ class ResultTableWidget(QWidget):
             self.table.setItem(i, 1, QTableWidgetItem(str(result['prediction'])))
             
             # 置信度
-            confidence = f"{result['confidence']:.4f}" if result['confidence'] > 0 else "N/A"
-            self.table.setItem(i, 2, QTableWidgetItem(confidence))
+            # confidence = f"{result['confidence']:.4f}" if result['confidence'] > 0 else "N/A"
+            # self.table.setItem(i, 2, QTableWidgetItem(confidence))
 
             # 正确答案
-            self.table.setItem(i, 3, QTableWidgetItem(str(result.get('answer', ''))))
+            self.table.setItem(i, 2, QTableWidgetItem(str(result.get('answer', ''))))
             # 正确率
             acc = result.get('accuracy', None)
             acc_str = f"{acc:.1f}%" if acc is not None else ""
-            self.table.setItem(i, 4, QTableWidgetItem(acc_str))
+            self.table.setItem(i, 3, QTableWidgetItem(acc_str))
             
             # 状态
             status_item = QTableWidgetItem(result['status'])
@@ -57,6 +57,6 @@ class ResultTableWidget(QWidget):
                 status_item.setBackground(QColor(200, 255, 200))  # 浅绿色
             else:
                 status_item.setBackground(QColor(255, 200, 200))  # 浅红色
-            self.table.setItem(i, 5, status_item)
+            self.table.setItem(i, 4, status_item)
         
         self.table.resizeColumnsToContents() 
