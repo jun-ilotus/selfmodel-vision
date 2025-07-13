@@ -10,15 +10,31 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 from PIL import Image
+import sys
+
+
+def get_resource_path(relative_path):
+    """获取资源文件的绝对路径，兼容打包后的环境"""
+    try:
+        # PyInstaller创建临时文件夹，将路径存储在_MEIPASS中
+        base_path = sys._MEIPASS
+    except Exception:
+        # 如果不是打包环境，使用当前文件所在目录
+        base_path = os.path.abspath(".")
+    
+    return os.path.join(base_path, relative_path)
 
 
 class ModelConfig:
     """模型配置类"""
     
-    def __init__(self, config_path=None, character_dict_path='ppocr_keys_v1.txt', use_space_char=True):
+    def __init__(self, config_path=None, character_dict_path='utils/ppocr_keys_v1.txt', use_space_char=True):
         self.config = self.load_config(config_path)
         self.character = []
-        with open(character_dict_path, 'r', encoding='utf-8') as f:
+        # with open(character_dict_path, 'r', encoding='utf-8') as f:
+        # 使用资源路径获取字符字典文件
+        char_dict_path = get_resource_path(character_dict_path)
+        with open(char_dict_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip('\n').strip('\r\n')
                 self.character.append(line)
@@ -27,7 +43,9 @@ class ModelConfig:
         self.character = ['blank'] + self.character
 
         self.classDict = []
-        with open('label2class.txt', 'r', encoding='utf-8') as f:
+        # with open('utils/label2class.txt', 'r', encoding='utf-8') as f:
+        label_path = get_resource_path('utils/label2class.txt')
+        with open(label_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip('\n').strip('\r\n')
                 self.classDict.append(line)
@@ -118,20 +136,51 @@ class ModelLoader:
             h, w = img.shape[:2]
             ratio = w / float(h)
 
-            target_height, target_width = self.config.get_preprocess_config()['resize']
+            target_height, target_width = 48, 320
 
-            new_w = min(int(np.ceil(target_height * ratio)), target_width)
-            resized_img = cv2.resize(img, (new_w, target_height))
-            padded_img = np.zeros((target_height, target_width, 3), dtype=np.uint8)
-            padded_img[:, :new_w, :] = resized_img
+            new_w = int(np.ceil(target_height * ratio))
+            if new_w > target_width:
+                resized_img = cv2.resize(img, (new_w, target_height))
+                # 如果宽度超过320，拆分为多个片段
+                img_arrays = []
 
-            img_array = padded_img.transpose(2, 0, 1) # HWC转换为CHW格式
+                start_x = 0
+                end_x = min(target_width, new_w)
+                while start_x < end_x:
+                    # 裁剪当前片段
+                    segment = resized_img[:, start_x:end_x, :]
+                    
+                    # 如果片段宽度不足320，进行填充
+                    if segment.shape[1] < target_width:
+                        padded_segment = np.zeros((target_height, target_width, 3), dtype=np.uint8)
+                        padded_segment[:, :segment.shape[1], :] = segment
+                        segment = padded_segment
+                    
+                    # 转换为CHW格式并归一化
+                    segment_array = segment.transpose(2, 0, 1)  # HWC转换为CHW格式
+                    segment_array = segment_array.astype(np.float32) / 255.0
+                    segment_array = (segment_array - 0.5) / 0.5
+                    
+                    img_arrays.append(segment_array)
 
-            # 归一化到[-1, 1]
-            img_array = img_array.astype(np.float32) / 255.0
-            img_array = (img_array - 0.5) / 0.5
+                    start_x = end_x
+                    end_x = min(target_width + target_width, new_w)
+                
+                # 组成batch
+                img_array = np.stack(img_arrays, axis=0)  # 添加batch维度
+            else:
+                # 正常处理
+                resized_img = cv2.resize(img, (new_w, target_height))
+                padded_img = np.zeros((target_height, target_width, 3), dtype=np.uint8)
+                padded_img[:, :new_w, :] = resized_img
 
-            img_array = img_array[np.newaxis, ...] # 添加batch维度
+                img_array = padded_img.transpose(2, 0, 1) # HWC转换为CHW格式
+
+                # 归一化到[-1, 1]
+                img_array = img_array.astype(np.float32) / 255.0
+                img_array = (img_array - 0.5) / 0.5
+
+                img_array = img_array[np.newaxis, ...] # 添加batch维度
         elif input_name == 'ImageClassificationInput':
             # 将输入图像的最小边（宽或高）缩放到256像素，同时保持原始宽高比
             def image_resize(image, min_len):
@@ -207,20 +256,33 @@ class ModelLoader:
             preds_idx = output.argmax(axis=2) # 取每个时间步（seq_len）上概率最大的类别索引，得到每个字符的预测类别，shape为[batch, seq_len]
             preds_prob = output.max(axis=2) # 取每个时间步（seq_len）上概率最大的概率值，得到每个字符的置信度，shape为[batch, seq_len]
 
-            char_list = []
-            conf_list = []
-            prev_idx = None
-            for idx, prob in zip(preds_idx[0], preds_prob[0]):
-                if idx == 0:  # blank
-                    prev_idx = None
-                    continue
-                if idx == prev_idx:  # 去重
-                    continue
-                char_list.append(self.config.character[idx])
-                conf_list.append(prob)
-                prev_idx = idx
-            text = ''.join(char_list)
-            conf = float(np.mean(conf_list)) if conf_list else 0.0
+            # 处理batch中的多个片段
+            all_texts = []
+            all_confs = []
+
+            for i in range(len(preds_prob)):
+                char_list = []
+                conf_list = []
+                prev_idx = None
+                for idx, prob in zip(preds_idx[i], preds_prob[i]):
+                    if idx == 0:  # blank
+                        prev_idx = None
+                        continue
+                    if idx == prev_idx:  # 去重
+                        continue
+                    char_list.append(self.config.character[idx])
+                    conf_list.append(prob)
+                    prev_idx = idx
+
+                segment_text = ''.join(char_list)
+                segment_conf = float(np.mean(conf_list)) if conf_list else 0.0
+
+                all_texts.append(segment_text)
+                all_confs.append(segment_conf)
+
+            # 合并所有片段的结果
+            text = ''.join(all_texts)
+            conf = float(np.mean(all_confs)) if all_confs else 0.0
         elif input_name == 'ImageClassificationInput':
             idx = output.argmax()
             text = self.config.classDict[idx]

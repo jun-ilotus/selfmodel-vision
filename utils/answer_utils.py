@@ -1,4 +1,4 @@
- #!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 答案工具模块
@@ -6,6 +6,19 @@
 
 import os
 import json
+import sys
+
+
+def get_resource_path(relative_path):
+    """获取资源文件的绝对路径，兼容打包后的环境"""
+    try:
+        # PyInstaller创建临时文件夹，将路径存储在_MEIPASS中
+        base_path = sys._MEIPASS
+    except Exception:
+        # 如果不是打包环境，使用当前文件所在目录
+        base_path = os.path.abspath(".")
+    
+    return os.path.join(base_path, relative_path)
 
 
 class AnswerMatcher:
@@ -19,16 +32,13 @@ class AnswerMatcher:
     def load_answers(self):
         """加载标准答案"""
         try:
-            if os.path.exists(self.answer_file_path):
-                with open(self.answer_file_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    # 将答案数据转换为字典，以文件名为键
-                    for item in data:
-                        if 'name' in item and 'label' in item:
-                            self.answers[item['name']] = item['label']
-                # print(f"成功加载 {len(self.answers)} 条标准答案")
-            else:
-                print(f"答案文件不存在: {self.answer_file_path}")
+            data_path = get_resource_path('utils/data.json')
+            with open(data_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # 将答案数据转换为字典，以文件名为键
+                for item in data:
+                    if 'name' in item and 'label' in item:
+                        self.answers[item['name']] = item['label']
         except Exception as e:
             print(f"加载答案文件失败: {str(e)}")
     

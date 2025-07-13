@@ -134,7 +134,7 @@ class AlgorithmRecognitionPlatform(QMainWindow):
         """上传图像"""
         file_dialog = QFileDialog()
         file_dialog.setFileMode(QFileDialog.ExistingFiles)
-        file_dialog.setNameFilter("图像文件 (*.png *.jpg *.jpeg *.bmp *.tiff)")
+        file_dialog.setNameFilter("图像文件 (*.png *.jpg *.jpeg)")
         
         if file_dialog.exec_():
             new_image_paths = file_dialog.selectedFiles()

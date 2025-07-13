@@ -9,3 +9,5 @@ __pycache__
 *.pywz
 
 image_test
+dist
+build
